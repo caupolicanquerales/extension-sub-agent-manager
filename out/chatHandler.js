@@ -59,9 +59,9 @@ async function handleChatRequest(request, context, stream, token, outputChannel)
                 // Handle the tool locally
                 let toolResult = '';
                 if (toolName === 'getProjectMetadata') {
-                    const args = result.toolCall.arguments || {};
+                    const args = (result.toolCall.arguments && result.toolCall.arguments[0]) || {};
                     stream.progress(`Scanning layout for ${args.projectName || 'project'}...`);
-                    toolResult = await executeWorkspaceScan(args.projectName, outputChannel);
+                    toolResult = await executeWorkspaceScan(args.projectName, args.actionOverProject, outputChannel);
                 }
                 else {
                     toolResult = `Error: Tool ${toolName} is not implemented in this extension-sub-agent-manager extension.`;
@@ -69,10 +69,7 @@ async function handleChatRequest(request, context, stream, token, outputChannel)
                 // Prepare the next payload to send the tool output back to the agent manager
                 currentPayload = {
                     conversationId: conversationId,
-                    toolResponse: {
-                        name: toolName,
-                        output: toolResult
-                    }
+                    prompt: toolResult
                 };
                 stream.progress('Processing tool data...');
             }
@@ -126,11 +123,28 @@ async function sendChatPayload(payload, stream, token, outputChannel) {
                         try {
                             const parsed = JSON.parse(dataStr);
                             outputChannel.appendLine('[SSE parsed] ' + JSON.stringify(parsed));
-                            if (parsed.message) {
-                                stream.markdown(parsed.message);
-                            }
                             if (parsed.toolCall) {
                                 interceptedToolCall = parsed.toolCall;
+                            }
+                            else if (parsed.message) {
+                                try {
+                                    const maybeToolCall = JSON.parse(parsed.message);
+                                    if (maybeToolCall && typeof maybeToolCall.name === 'string') {
+                                        // Normalize: backend may send "argument" (singular) or "arguments" (plural)
+                                        if (maybeToolCall.argument && !maybeToolCall.arguments) {
+                                            maybeToolCall.arguments = maybeToolCall.argument;
+                                            delete maybeToolCall.argument;
+                                        }
+                                        interceptedToolCall = maybeToolCall;
+                                        outputChannel.appendLine('[SSE] toolCall extracted from message field');
+                                    }
+                                    else {
+                                        stream.markdown(parsed.message);
+                                    }
+                                }
+                                catch {
+                                    stream.markdown(parsed.message);
+                                }
                             }
                         }
                         catch (e) {
@@ -147,7 +161,7 @@ async function sendChatPayload(payload, stream, token, outputChannel) {
             });
             res.on('error', reject);
         });
-        req.setTimeout(30000, () => {
+        req.setTimeout(120000, () => {
             req.destroy(new Error('Request timed out'));
         });
         req.on('error', reject);
@@ -155,12 +169,12 @@ async function sendChatPayload(payload, stream, token, outputChannel) {
         req.end();
     });
 }
-async function executeWorkspaceScan(targetProjectName, outputChannel) {
+async function executeWorkspaceScan(targetProjectName, action, outputChannel) {
     const folders = vscode.workspace.workspaceFolders;
     if (!folders || folders.length === 0) {
-        return "ERROR: No workspace folders are currently open.";
+        return JSON.stringify({ status: 'ERROR', reason: 'No workspace folders are currently open.' });
     }
-    let targetFolder = folders[0]; // Fallback to the first folder if no name is provided
+    let targetFolder = folders[0];
     if (targetProjectName) {
         const cleanedName = targetProjectName.toLowerCase().trim();
         const found = folders.find(f => f.name.toLowerCase().includes(cleanedName));
@@ -168,22 +182,37 @@ async function executeWorkspaceScan(targetProjectName, outputChannel) {
             targetFolder = found;
         }
         else {
-            return `ERROR: Could not find a project folder matching the name "${targetProjectName}" in the workspace. Available folders are: ${folders.map(f => f.name).join(', ')}`;
+            return JSON.stringify({
+                status: 'ERROR',
+                reason: `No folder matching "${targetProjectName}" found.`,
+                availableFolders: folders.map(f => f.name)
+            });
         }
     }
-    outputChannel.appendLine(`[Workspace Scan] Narrowing search to folder: ${targetFolder.name}`);
-    // Create a RelativePattern to search ONLY inside this specific project directory
-    const mavenPattern = new vscode.RelativePattern(targetFolder, '**/pom.xml');
-    const npmPattern = new vscode.RelativePattern(targetFolder, '**/package.json');
-    // Run the scoped searches
-    const mavenFiles = await vscode.workspace.findFiles(mavenPattern, '**/target/**', 1);
-    const npmFiles = await vscode.workspace.findFiles(npmPattern, '**/node_modules/**', 1);
+    outputChannel.appendLine(`[Workspace Scan] Scanning folder: ${targetFolder.name}`);
+    const mavenFiles = await vscode.workspace.findFiles(new vscode.RelativePattern(targetFolder, '**/pom.xml'), '**/target/**', 1);
+    const npmFiles = await vscode.workspace.findFiles(new vscode.RelativePattern(targetFolder, '**/package.json'), '**/node_modules/**', 1);
     if (mavenFiles.length > 0) {
-        return `FOUND in project [${targetFolder.name}]: Maven project structure. Contains 'pom.xml'. Suggested compilation method: Maven build. Path: ${mavenFiles[0].fsPath}`;
+        return JSON.stringify({
+            status: 'OK',
+            project: targetFolder.name,
+            buildTool: 'maven',
+            buildFile: mavenFiles[0].fsPath
+        });
     }
     if (npmFiles.length > 0) {
-        return `FOUND in project [${targetFolder.name}]: Node.js project structure. Contains 'package.json'. Suggested compilation method: npm run build. Path: ${npmFiles[0].fsPath}`;
+        return JSON.stringify({
+            status: 'OK',
+            project: targetFolder.name,
+            buildTool: 'npm',
+            buildFile: npmFiles[0].fsPath
+        });
     }
-    return `FOUND in project [${targetFolder.name}]: Generic project layout. No explicit build configurations recognized.`;
+    return JSON.stringify({
+        status: 'OK',
+        project: targetFolder.name,
+        buildTool: 'unknown',
+        buildFile: null
+    });
 }
 //# sourceMappingURL=chatHandler.js.map
