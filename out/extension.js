@@ -40,10 +40,21 @@ exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
 const chatHandler_1 = require("./chatHandler");
 function activate(context) {
+    let disposableCommand = vscode.commands.registerCommand('myCompilerExtension.runTerminalCommand', (args) => {
+        if (!args || !args.command) {
+            return;
+        }
+        let terminal = vscode.window.activeTerminal;
+        if (!terminal) {
+            terminal = vscode.window.createTerminal('Agent Compiler');
+        }
+        terminal.show(true);
+        terminal.sendText(args.command); // This executes whatever argument is passed to it
+    });
+    context.subscriptions.push(disposableCommand);
     const outputChannel = vscode.window.createOutputChannel('Sub Agent Manager');
     context.subscriptions.push(outputChannel);
     const agent = vscode.chat.createChatParticipant('my-sub-agent-manager', async (request, context, stream, token) => {
-        // Add any pre-processing steps here before calling the agent
         await (0, chatHandler_1.handleChatRequest)(request, context, stream, token, outputChannel);
     });
     context.subscriptions.push(agent);

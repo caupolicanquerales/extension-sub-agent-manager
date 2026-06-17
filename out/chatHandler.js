@@ -53,13 +53,13 @@ async function handleChatRequest(request, context, stream, token, outputChannel)
                 break;
             }
             const result = await sendChatPayload(currentPayload, stream, token, outputChannel);
-            if (result.toolCall) {
-                const toolName = result.toolCall.name;
+            if (result.dataMessage?.type == 'recursive' && result.dataMessage.toolCall) {
+                const toolName = result.dataMessage.toolCall.name;
                 outputChannel.appendLine(`[Agent Loop] Executing tool: ${toolName}`);
                 // Handle the tool locally
                 let toolResult = '';
                 if (toolName === 'getProjectMetadata') {
-                    const args = (result.toolCall.arguments && result.toolCall.arguments[0]) || {};
+                    const args = (result.dataMessage.toolCall.arguments && result.dataMessage.toolCall.arguments[0]) || {};
                     stream.progress(`Scanning layout for ${args.projectName || 'project'}...`);
                     toolResult = await executeWorkspaceScan(args.projectName, args.actionOverProject, outputChannel);
                 }
@@ -72,6 +72,15 @@ async function handleChatRequest(request, context, stream, token, outputChannel)
                     prompt: toolResult
                 };
                 stream.progress('Processing tool data...');
+            }
+            else if (result.dataMessage?.type == 'terminal') {
+                const rawCommand = result.dataMessage.message;
+                const encodedArgs = encodeURIComponent(JSON.stringify({ command: rawCommand }));
+                stream.markdown(`\n\`\`\`bash\n${rawCommand}\n\`\`\`\n`);
+                const buttonMd = new vscode.MarkdownString(`[$(terminal) Run Command](command:myCompilerExtension.runTerminalCommand?${encodedArgs})`, true);
+                buttonMd.isTrusted = { enabledCommands: ['myCompilerExtension.runTerminalCommand'] };
+                stream.markdown(buttonMd);
+                processing = false;
             }
             else {
                 // No tool call returned. The agent gave its final message, we can stop looping.
@@ -123,20 +132,30 @@ async function sendChatPayload(payload, stream, token, outputChannel) {
                         try {
                             const parsed = JSON.parse(dataStr);
                             outputChannel.appendLine('[SSE parsed] ' + JSON.stringify(parsed));
-                            if (parsed.toolCall) {
-                                interceptedToolCall = parsed.toolCall;
+                            if (parsed.toolCall || parsed.type) {
+                                // DataMessage arrived directly with type/toolCall at the top level
+                                interceptedToolCall = parsed;
                             }
                             else if (parsed.message) {
                                 try {
-                                    const maybeToolCall = JSON.parse(parsed.message);
-                                    if (maybeToolCall && typeof maybeToolCall.name === 'string') {
-                                        // Normalize: backend may send "argument" (singular) or "arguments" (plural)
-                                        if (maybeToolCall.argument && !maybeToolCall.arguments) {
-                                            maybeToolCall.arguments = maybeToolCall.argument;
-                                            delete maybeToolCall.argument;
+                                    const maybeInner = JSON.parse(parsed.message);
+                                    if (maybeInner && typeof maybeInner.name === 'string') {
+                                        // Raw tool-call object: { name, arguments }
+                                        if (maybeInner.argument && !maybeInner.arguments) {
+                                            maybeInner.arguments = maybeInner.argument;
+                                            delete maybeInner.argument;
                                         }
-                                        interceptedToolCall = maybeToolCall;
+                                        interceptedToolCall = maybeInner;
                                         outputChannel.appendLine('[SSE] toolCall extracted from message field');
+                                    }
+                                    else if (maybeInner && maybeInner.type) {
+                                        // DataMessage JSON string: { type, message?, toolCall? }
+                                        if (maybeInner.toolCall?.argument && !maybeInner.toolCall?.arguments) {
+                                            maybeInner.toolCall.arguments = maybeInner.toolCall.argument;
+                                            delete maybeInner.toolCall.argument;
+                                        }
+                                        interceptedToolCall = maybeInner;
+                                        outputChannel.appendLine('[SSE] DataMessage extracted from message field, type: ' + maybeInner.type);
                                     }
                                     else {
                                         stream.markdown(parsed.message);
@@ -156,7 +175,7 @@ async function sendChatPayload(payload, stream, token, outputChannel) {
             res.on('end', () => {
                 if (!settled) {
                     settled = true;
-                    resolve({ toolCall: interceptedToolCall });
+                    resolve({ dataMessage: interceptedToolCall });
                 }
             });
             res.on('error', reject);

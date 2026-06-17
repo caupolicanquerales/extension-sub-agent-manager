@@ -5,12 +5,25 @@ import { handleChatRequest } from './chatHandler';
 
 export function activate(context: vscode.ExtensionContext) {
 
+	let disposableCommand = vscode.commands.registerCommand('myCompilerExtension.runTerminalCommand', (args: { command: string }) => {
+        if (!args || !args.command) {
+            return;
+        }
+
+        let terminal = vscode.window.activeTerminal;
+        if (!terminal) {
+            terminal = vscode.window.createTerminal('Agent Compiler');
+        }
+
+        terminal.show(true);
+        terminal.sendText(args.command); // This executes whatever argument is passed to it
+    });
+	context.subscriptions.push(disposableCommand);
+	
 	const outputChannel = vscode.window.createOutputChannel('Sub Agent Manager');
 	context.subscriptions.push(outputChannel);
 
 	const agent = vscode.chat.createChatParticipant('my-sub-agent-manager', async (request, context, stream, token) => {
-        // Add any pre-processing steps here before calling the agent
-
         await handleChatRequest(request, context, stream, token, outputChannel);
     });
 	
