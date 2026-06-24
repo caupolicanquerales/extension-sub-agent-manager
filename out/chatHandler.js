@@ -82,6 +82,27 @@ async function handleChatRequest(request, context, stream, token, outputChannel)
                 stream.markdown(buttonMd);
                 processing = false;
             }
+            else if (result.dataMessage?.type === 'step_actions') {
+                const stepPlan = result.dataMessage.stepPlanError;
+                if (stepPlan?.errorSummary) {
+                    stream.markdown(`### Error Analysis\n${stepPlan.errorSummary}\n\n`);
+                }
+                if (stepPlan?.steps && stepPlan.steps.length > 0) {
+                    stream.markdown(`**Suggested fix steps:**\n\n`);
+                    for (const step of stepPlan.steps) {
+                        const stepLabel = [step.id ? `Step ${step.id}` : '', step.title].filter(Boolean).join(': ');
+                        stream.markdown(`**${stepLabel}**\n`);
+                        if (step.description) {
+                            stream.markdown(`${step.description}\n\n`);
+                        }
+                    }
+                    const encodedArgs = encodeURIComponent(JSON.stringify(stepPlan.steps));
+                    const buttonMd = new vscode.MarkdownString(`[$(wrench) Apply All Steps](command:manager-extension.applyResolutionStep?${encodedArgs})`, true);
+                    buttonMd.isTrusted = { enabledCommands: ['manager-extension.applyResolutionStep'] };
+                    stream.markdown(buttonMd);
+                }
+                processing = false;
+            }
             else {
                 // No tool call returned. The agent gave its final message, we can stop looping.
                 processing = false;

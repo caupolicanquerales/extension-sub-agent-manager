@@ -23,8 +23,8 @@
     ],
     "commands": [
       {
-        "command": "manager-extension.helloWorld",
-        "title": "Hello World"
+        "command": "manager-extension.applyResolutionStep",
+        "title": "Apply Resolution Step"
       }
     ]
   },

@@ -1,20 +1,9 @@
 import * as vscode from 'vscode';
 import * as http from 'http';
 import type { IncomingMessage } from 'http';
+import { ToolArgument, DataMessage } from './interfaces';
 
-interface ToolArgument {
-    projectName?: string;
-    actionOverProject?: string;
-}
 
-interface DataMessage {
-    message?: string;
-    type?: string;
-    toolCall?: {
-        name: string;
-        arguments?: ToolArgument[];
-    };
-}
 
 export async function handleChatRequest(
     request: vscode.ChatRequest,
@@ -77,6 +66,33 @@ export async function handleChatRequest(
                 );
                 buttonMd.isTrusted = { enabledCommands: ['myCompilerExtension.runTerminalCommand'] };
                 stream.markdown(buttonMd);
+
+                processing = false;
+
+            } else if (result.dataMessage?.type === 'step_actions') {
+                const stepPlan = result.dataMessage.stepPlanError;
+
+                if (stepPlan?.errorSummary) {
+                    stream.markdown(`### Error Analysis\n${stepPlan.errorSummary}\n\n`);
+                }
+
+                if (stepPlan?.steps && stepPlan.steps.length > 0) {
+                    stream.markdown(`**Suggested fix steps:**\n\n`);
+                    for (const step of stepPlan.steps) {
+                        const stepLabel = [step.id ? `Step ${step.id}` : '', step.title].filter(Boolean).join(': ');
+                        stream.markdown(`**${stepLabel}**\n`);
+                        if (step.description) {
+                            stream.markdown(`${step.description}\n\n`);
+                        }
+                    }
+                    const encodedArgs = encodeURIComponent(JSON.stringify(stepPlan.steps));
+                    const buttonMd = new vscode.MarkdownString(
+                        `[$(wrench) Apply All Steps](command:manager-extension.applyResolutionStep?${encodedArgs})`,
+                        true
+                    );
+                    buttonMd.isTrusted = { enabledCommands: ['manager-extension.applyResolutionStep'] };
+                    stream.markdown(buttonMd);
+                }
 
                 processing = false;
 
