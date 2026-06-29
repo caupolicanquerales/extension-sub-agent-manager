@@ -35,8 +35,17 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.handleChatRequest = handleChatRequest;
 const vscode = __importStar(require("vscode"));
-const http = __importStar(require("http"));
-async function handleChatRequest(request, context, stream, token, outputChannel) {
+const sendingChatPayload_1 = require("./sendingChatPayload");
+function renderLabeledItems(stream, items) {
+    for (const item of items) {
+        const label = [item.id ? `Step ${item.id}` : '', item.title].filter(Boolean).join(': ');
+        stream.markdown(`**${label}**\n`);
+        if (item.description) {
+            stream.markdown(`${item.description}\n\n`);
+        }
+    }
+}
+async function handleChatRequest(request, context, stream, token, outputChannel, pendingStepsStore) {
     const conversationId = crypto.randomUUID();
     stream.progress('Thinking...');
     try {
@@ -52,11 +61,10 @@ async function handleChatRequest(request, context, stream, token, outputChannel)
                 stream.markdown('⚠️ **Max tool iterations reached. Stopping.**');
                 break;
             }
-            const result = await sendChatPayload(currentPayload, stream, token, outputChannel);
-            if (result.dataMessage?.type == 'recursive' && result.dataMessage.toolCall) {
+            const result = await (0, sendingChatPayload_1.sendChatPayload)(currentPayload, stream, token, outputChannel);
+            if (result.dataMessage?.type === 'recursive' && result.dataMessage.toolCall) {
                 const toolName = result.dataMessage.toolCall.name;
                 outputChannel.appendLine(`[Agent Loop] Executing tool: ${toolName}`);
-                // Handle the tool locally
                 let toolResult = '';
                 if (toolName === 'getProjectMetadata') {
                     const args = (result.dataMessage.toolCall.arguments && result.dataMessage.toolCall.arguments[0]) || {};
@@ -66,14 +74,13 @@ async function handleChatRequest(request, context, stream, token, outputChannel)
                 else {
                     toolResult = `Error: Tool ${toolName} is not implemented in this extension-sub-agent-manager extension.`;
                 }
-                // Prepare the next payload to send the tool output back to the agent manager
                 currentPayload = {
                     conversationId: conversationId,
                     prompt: toolResult
                 };
                 stream.progress('Processing tool data...');
             }
-            else if (result.dataMessage?.type == 'terminal') {
+            else if (result.dataMessage?.type === 'terminal') {
                 const rawCommand = result.dataMessage.message;
                 const encodedArgs = encodeURIComponent(JSON.stringify({ command: rawCommand }));
                 stream.markdown(`\n\`\`\`bash\n${rawCommand}\n\`\`\`\n`);
@@ -84,21 +91,28 @@ async function handleChatRequest(request, context, stream, token, outputChannel)
             }
             else if (result.dataMessage?.type === 'step_actions') {
                 const stepPlan = result.dataMessage.stepPlanError;
+                const defectPlan = result.dataMessage.defects;
                 if (stepPlan?.errorSummary) {
                     stream.markdown(`### Error Analysis\n${stepPlan.errorSummary}\n\n`);
                 }
                 if (stepPlan?.steps && stepPlan.steps.length > 0) {
                     stream.markdown(`**Suggested fix steps:**\n\n`);
-                    for (const step of stepPlan.steps) {
-                        const stepLabel = [step.id ? `Step ${step.id}` : '', step.title].filter(Boolean).join(': ');
-                        stream.markdown(`**${stepLabel}**\n`);
-                        if (step.description) {
-                            stream.markdown(`${step.description}\n\n`);
-                        }
-                    }
-                    const encodedArgs = encodeURIComponent(JSON.stringify(stepPlan.steps));
+                    renderLabeledItems(stream, stepPlan.steps);
+                    const stepsId = crypto.randomUUID();
+                    pendingStepsStore.set(stepsId, stepPlan.steps);
+                    const encodedArgs = encodeURIComponent(JSON.stringify([stepsId]));
                     const buttonMd = new vscode.MarkdownString(`[$(wrench) Apply All Steps](command:manager-extension.applyResolutionStep?${encodedArgs})`, true);
                     buttonMd.isTrusted = { enabledCommands: ['manager-extension.applyResolutionStep'] };
+                    stream.markdown(buttonMd);
+                }
+                if (defectPlan?.defects && defectPlan.defects.length > 0) {
+                    stream.markdown(`### Defects Found (${defectPlan.totalDefectsFound ?? defectPlan.defects.length})\n\n`);
+                    renderLabeledItems(stream, defectPlan.defects);
+                    const stepsId = crypto.randomUUID();
+                    pendingStepsStore.set(stepsId, defectPlan?.defects);
+                    const encodedArgs = encodeURIComponent(JSON.stringify([stepsId]));
+                    const buttonMd = new vscode.MarkdownString(`[$(wrench) Apply All Steps](command:manager-extension.fixDefect?${encodedArgs})`, true);
+                    buttonMd.isTrusted = { enabledCommands: ['manager-extension.fixDefect'] };
                     stream.markdown(buttonMd);
                 }
                 processing = false;
@@ -112,102 +126,6 @@ async function handleChatRequest(request, context, stream, token, outputChannel)
     catch (err) {
         stream.markdown(`❌ **Error:** ${err instanceof Error ? err.message : String(err)}`);
     }
-}
-async function sendChatPayload(payload, stream, token, outputChannel) {
-    const body = JSON.stringify(payload);
-    return new Promise((resolve, reject) => {
-        let interceptedToolCall = null;
-        let settled = false;
-        const req = http.request({
-            hostname: 'localhost',
-            port: 8081,
-            path: '/sub-agent-manager-chat/chat-stream',
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Accept': 'text/event-stream',
-                'Content-Length': Buffer.byteLength(body)
-            }
-        }, (res) => {
-            if (res.statusCode && res.statusCode >= 400) {
-                reject(new Error(`Backend error: ${res.statusCode} ${res.statusMessage}`));
-                return;
-            }
-            res.setEncoding('utf8');
-            let lineBuffer = '';
-            res.on('data', (chunk) => {
-                if (token.isCancellationRequested) {
-                    req.destroy();
-                    if (!settled) {
-                        settled = true;
-                        resolve({});
-                    }
-                    return;
-                }
-                const text = lineBuffer + chunk;
-                const lines = text.split('\n');
-                lineBuffer = lines.pop() ?? '';
-                for (const line of lines) {
-                    if (line.startsWith('data:')) {
-                        const dataStr = line.replace('data:', '').trim();
-                        try {
-                            const parsed = JSON.parse(dataStr);
-                            outputChannel.appendLine('[SSE parsed] ' + JSON.stringify(parsed));
-                            if (parsed.toolCall || parsed.type) {
-                                // DataMessage arrived directly with type/toolCall at the top level
-                                interceptedToolCall = parsed;
-                            }
-                            else if (parsed.message) {
-                                try {
-                                    const maybeInner = JSON.parse(parsed.message);
-                                    if (maybeInner && typeof maybeInner.name === 'string') {
-                                        // Raw tool-call object: { name, arguments }
-                                        if (maybeInner.argument && !maybeInner.arguments) {
-                                            maybeInner.arguments = maybeInner.argument;
-                                            delete maybeInner.argument;
-                                        }
-                                        interceptedToolCall = maybeInner;
-                                        outputChannel.appendLine('[SSE] toolCall extracted from message field');
-                                    }
-                                    else if (maybeInner && maybeInner.type) {
-                                        // DataMessage JSON string: { type, message?, toolCall? }
-                                        if (maybeInner.toolCall?.argument && !maybeInner.toolCall?.arguments) {
-                                            maybeInner.toolCall.arguments = maybeInner.toolCall.argument;
-                                            delete maybeInner.toolCall.argument;
-                                        }
-                                        interceptedToolCall = maybeInner;
-                                        outputChannel.appendLine('[SSE] DataMessage extracted from message field, type: ' + maybeInner.type);
-                                    }
-                                    else {
-                                        stream.markdown(parsed.message);
-                                    }
-                                }
-                                catch {
-                                    stream.markdown(parsed.message);
-                                }
-                            }
-                        }
-                        catch (e) {
-                            outputChannel.appendLine('[SSE parse error] ' + dataStr);
-                        }
-                    }
-                }
-            });
-            res.on('end', () => {
-                if (!settled) {
-                    settled = true;
-                    resolve({ dataMessage: interceptedToolCall });
-                }
-            });
-            res.on('error', reject);
-        });
-        req.setTimeout(120000, () => {
-            req.destroy(new Error('Request timed out'));
-        });
-        req.on('error', reject);
-        req.write(body);
-        req.end();
-    });
 }
 async function executeWorkspaceScan(targetProjectName, action, outputChannel) {
     const folders = vscode.workspace.workspaceFolders;
