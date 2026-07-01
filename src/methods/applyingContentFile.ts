@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { DataEditDefect } from './interfaces';
+import { DataEditDefect } from '../interfaces/interfaces';
 
 /**
  * Read-only content provider for the "before" side of the patch diff view.
@@ -204,7 +204,10 @@ export async function executeFileEditStep(
  * Must be called OUTSIDE any withProgress block so the diff view and notification
  * appear next to the editor, not inside the chat or progress overlay.
  */
-export async function confirmAppliedPatch(patch: AppliedPatch): Promise<void> {
+export async function confirmAppliedPatch(
+    patch: AppliedPatch,
+    outputChannel?: vscode.OutputChannel
+): Promise<PatchDecision> {
     const { fileUri, document, originalContent, fileName, explanation,
             firstChangedLine, provider, codeLensProvider } = patch;
 
@@ -230,7 +233,12 @@ export async function confirmAppliedPatch(patch: AppliedPatch): Promise<void> {
         // Register CodeLens on the patched file and await the user's click
         const decision = await codeLensProvider.register(fileUri, firstChangedLine);
 
+        const statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+
         if (decision === 'undo') {
+            statusItem.text = `$(loading~spin) Reverting patch on ${fileName}…`;
+            statusItem.show();
+            outputChannel?.appendLine(`↩  User chose to revert — restoring ${fileName}…`);
             const revertEdit = new vscode.WorkspaceEdit();
             const fullRange = new vscode.Range(
                 document.lineAt(0).range.start,
@@ -240,12 +248,22 @@ export async function confirmAppliedPatch(patch: AppliedPatch): Promise<void> {
             await vscode.workspace.applyEdit(revertEdit);
             await vscode.workspace.save(fileUri);
             await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
-            vscode.window.showInformationMessage(`↩️ Reverted patch on ${fileName}.`);
+            statusItem.text = `$(check) Reverted: ${fileName}`;
+            outputChannel?.appendLine(`       ✓  Reverted — ${fileName}`);
         } else {
+            statusItem.text = `$(loading~spin) Saving patch on ${fileName}…`;
+            statusItem.show();
+            outputChannel?.appendLine(`✔  User accepted patch — saving ${fileName}…`);
             await vscode.workspace.save(fileUri);
             await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
-            vscode.window.showInformationMessage(`🎯 Patch applied: ${explanation}`);
+            statusItem.text = `$(check) Patch saved: ${fileName}`;
+            outputChannel?.appendLine(`       ✓  Saved — ${explanation}`);
         }
+
+        await new Promise<void>(resolve => setTimeout(resolve, 2500));
+        statusItem.dispose();
+
+        return decision;
     } finally {
         // Restore the original diffEditor.codeLens setting
         await diffEditorConfig.update('codeLens', prevCodeLens, vscode.ConfigurationTarget.Global);

@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as http from 'http';
 import type { IncomingMessage } from 'http';
-import { DataMessage } from './interfaces';
+import { DataMessage } from '../interfaces/interfaces';
 
 export async function sendChatPayload(
     payload: any,

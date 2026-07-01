@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
-import { ToolArgument } from './interfaces';
-import { sendChatPayload } from './sendingChatPayload';
+import { ToolArgument } from './interfaces/interfaces';
+import { sendChatPayload } from './methods/sendingChatPayload';
+import { processFixDefectSteps } from './methods/handlingFixDefect';
+import { OriginalContentProvider, PatchCodeLensProvider } from './methods/applyingContentFile';
 
 
 function renderLabeledItems(
@@ -22,7 +24,10 @@ export async function handleChatRequest(
     stream: vscode.ChatResponseStream,
     token: vscode.CancellationToken,
     outputChannel: vscode.OutputChannel,
-    pendingStepsStore: Map<string, any[]>
+    pendingStepsStore: Map<string, any[]>,
+    pendingFixResolvers: Map<string, () => void>,
+    originalContentProvider: OriginalContentProvider,
+    patchCodeLensProvider: PatchCodeLensProvider
 ): Promise<void> {
     const conversationId = crypto.randomUUID(); 
     stream.progress('Thinking...');
@@ -113,6 +118,31 @@ export async function handleChatRequest(
                     );
                     buttonMd.isTrusted = { enabledCommands: ['manager-extension.fixDefect'] };
                     stream.markdown(buttonMd);
+
+                    // Keep the chat turn alive (blue spinner) until the user clicks the button.
+                    // The fixDefect command resolves this promise, then we process inline
+                    // with the live stream so every step shows in the chat panel.
+                    processing = false;
+                    const fixTrigger = new Promise<void>((resolve, reject) => {
+                        pendingFixResolvers.set(stepsId, resolve);
+                        const d = token.onCancellationRequested(() => {
+                            pendingFixResolvers.delete(stepsId);
+                            d.dispose();
+                            reject(new vscode.CancellationError());
+                        });
+                    });
+                    stream.progress('Click "Apply All Steps" to begin fixing…');
+                    try {
+                        await fixTrigger;
+                    } catch (e) {
+                        if (e instanceof vscode.CancellationError) { return; }
+                        throw e;
+                    }
+                    await processFixDefectSteps(
+                        stepsId, outputChannel, pendingStepsStore,
+                        originalContentProvider, patchCodeLensProvider, stream
+                    );
+                    return;
                 }
 
                 processing = false;

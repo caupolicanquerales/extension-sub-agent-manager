@@ -41,11 +41,10 @@ const fs = __importStar(require("fs"));
 const os = __importStar(require("os"));
 const path = __importStar(require("path"));
 const chatHandler_1 = require("./chatHandler");
-const handlingTerminalCommands_1 = require("./handlingTerminalCommands");
-const applyingContentFile_1 = require("./applyingContentFile");
-const handlingErrorLogs_1 = require("./handlingErrorLogs");
-const handlingCodeContext_1 = require("./handlingCodeContext");
-const sendingChatPayload_1 = require("./sendingChatPayload");
+const handlingTerminalCommands_1 = require("./methods/handlingTerminalCommands");
+const applyingContentFile_1 = require("./methods/applyingContentFile");
+const handlingErrorLogs_1 = require("./methods/handlingErrorLogs");
+const handlingFixDefect_1 = require("./methods/handlingFixDefect");
 function activate(context) {
     const originalContentProvider = new applyingContentFile_1.OriginalContentProvider();
     context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(applyingContentFile_1.OriginalContentProvider.scheme, originalContentProvider));
@@ -99,6 +98,7 @@ function activate(context) {
     });
     context.subscriptions.push(executionListener);
     const pendingStepsStore = new Map();
+    const pendingFixResolvers = new Map();
     const outputChannel = vscode.window.createOutputChannel('Sub Agent Manager');
     context.subscriptions.push(outputChannel);
     const applyStepsDisposable = vscode.commands.registerCommand('manager-extension.applyResolutionStep', async (stepsId) => {
@@ -159,49 +159,26 @@ function activate(context) {
     });
     context.subscriptions.push(applyStepsDisposable);
     let fixCommand = vscode.commands.registerCommand('manager-extension.fixDefect', async (stepsId) => {
-        const defects = pendingStepsStore.get(stepsId);
-        if (!defects || defects.length === 0) {
-            vscode.window.showErrorMessage('No defects received to fix.');
-            return;
+        const resolve = pendingFixResolvers.get(stepsId);
+        if (resolve) {
+            // Normal path: a chat turn is waiting for this click — unblock it.
+            pendingFixResolvers.delete(stepsId);
+            resolve();
         }
-        pendingStepsStore.delete(stepsId);
-        const appliedPatches = [];
-        await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: `Preparing fix for ${defects.length} defect(s)...`,
-            cancellable: false
-        }, async (progress) => {
-            for (const defect of defects) {
-                progress.report({ message: `Gathering context for ${defect.id}...` });
-                const enrichedContext = await (0, handlingCodeContext_1.getCodeContext)(defect, 15);
-                if (!enrichedContext) {
-                    vscode.window.showErrorMessage(`Could not read source file context for ${defect?.coordinates?.filepath}`);
-                    continue;
-                }
-                defect.context = enrichedContext;
-                const currentPayload = {
-                    prompt: "[INPUT_DEFECT: DEFECT]" + JSON.stringify(defect),
-                    conversationId: crypto.randomUUID()
-                };
-                progress.report({ message: `Generating precise patch for ${defect.id}...` });
-                const result = await (0, sendingChatPayload_1.sendChatPayload)(currentPayload, undefined, undefined, outputChannel);
-                const patch = await (0, applyingContentFile_1.executeFileEditStep)(result?.dataMessage?.editDefect, originalContentProvider, patchCodeLensProvider);
-                if (patch) {
-                    appliedPatches.push(patch);
-                }
+        else {
+            // Fallback: user clicked the button after the chat turn expired.
+            try {
+                await (0, handlingFixDefect_1.processFixDefectSteps)(stepsId, outputChannel, pendingStepsStore, originalContentProvider, patchCodeLensProvider);
             }
-        });
-        // Confirm/revert each patch outside the progress block so the spinner
-        // stops before the diff view and Keep/Undo notification appear.
-        for (const patch of appliedPatches) {
-            if (patch) {
-                await (0, applyingContentFile_1.confirmAppliedPatch)(patch);
+            catch (err) {
+                outputChannel.appendLine(`❌ Unexpected error: ${err instanceof Error ? err.message : String(err)}`);
+                vscode.window.showErrorMessage(`Sub Agent error: ${err instanceof Error ? err.message : String(err)}`);
             }
         }
     });
     context.subscriptions.push(fixCommand);
     const agent = vscode.chat.createChatParticipant('my-sub-agent-manager', async (request, context, stream, token) => {
-        await (0, chatHandler_1.handleChatRequest)(request, context, stream, token, outputChannel, pendingStepsStore);
+        await (0, chatHandler_1.handleChatRequest)(request, context, stream, token, outputChannel, pendingStepsStore, pendingFixResolvers, originalContentProvider, patchCodeLensProvider);
     });
     context.subscriptions.push(agent);
 }

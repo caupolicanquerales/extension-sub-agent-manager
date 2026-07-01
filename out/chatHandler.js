@@ -35,7 +35,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.handleChatRequest = handleChatRequest;
 const vscode = __importStar(require("vscode"));
-const sendingChatPayload_1 = require("./sendingChatPayload");
+const sendingChatPayload_1 = require("./methods/sendingChatPayload");
+const handlingFixDefect_1 = require("./methods/handlingFixDefect");
 function renderLabeledItems(stream, items) {
     for (const item of items) {
         const label = [item.id ? `Step ${item.id}` : '', item.title].filter(Boolean).join(': ');
@@ -45,7 +46,7 @@ function renderLabeledItems(stream, items) {
         }
     }
 }
-async function handleChatRequest(request, context, stream, token, outputChannel, pendingStepsStore) {
+async function handleChatRequest(request, context, stream, token, outputChannel, pendingStepsStore, pendingFixResolvers, originalContentProvider, patchCodeLensProvider) {
     const conversationId = crypto.randomUUID();
     stream.progress('Thinking...');
     try {
@@ -114,6 +115,30 @@ async function handleChatRequest(request, context, stream, token, outputChannel,
                     const buttonMd = new vscode.MarkdownString(`[$(wrench) Apply All Steps](command:manager-extension.fixDefect?${encodedArgs})`, true);
                     buttonMd.isTrusted = { enabledCommands: ['manager-extension.fixDefect'] };
                     stream.markdown(buttonMd);
+                    // Keep the chat turn alive (blue spinner) until the user clicks the button.
+                    // The fixDefect command resolves this promise, then we process inline
+                    // with the live stream so every step shows in the chat panel.
+                    processing = false;
+                    const fixTrigger = new Promise((resolve, reject) => {
+                        pendingFixResolvers.set(stepsId, resolve);
+                        const d = token.onCancellationRequested(() => {
+                            pendingFixResolvers.delete(stepsId);
+                            d.dispose();
+                            reject(new vscode.CancellationError());
+                        });
+                    });
+                    stream.progress('Click "Apply All Steps" to begin fixing…');
+                    try {
+                        await fixTrigger;
+                    }
+                    catch (e) {
+                        if (e instanceof vscode.CancellationError) {
+                            return;
+                        }
+                        throw e;
+                    }
+                    await (0, handlingFixDefect_1.processFixDefectSteps)(stepsId, outputChannel, pendingStepsStore, originalContentProvider, patchCodeLensProvider, stream);
+                    return;
                 }
                 processing = false;
             }

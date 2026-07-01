@@ -5,12 +5,10 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { handleChatRequest } from './chatHandler';
-import { executeCommandStep } from './handlingTerminalCommands';
-import { executeFileEditStep, confirmAppliedPatch, OriginalContentProvider, PatchCodeLensProvider } from './applyingContentFile';
-import { stripAnsiCodes, sendErrorToAgent } from './handlingErrorLogs';
-import { Defect } from './interfaces';
-import { getCodeContext } from './handlingCodeContext';
-import { sendChatPayload } from './sendingChatPayload';
+import { executeCommandStep } from './methods/handlingTerminalCommands';
+import {  OriginalContentProvider, PatchCodeLensProvider } from './methods/applyingContentFile';
+import { stripAnsiCodes, sendErrorToAgent } from './methods/handlingErrorLogs';
+import { processFixDefectSteps } from './methods/handlingFixDefect';
 
 export function activate(context: vscode.ExtensionContext) {
 
@@ -86,6 +84,7 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(executionListener);
 
     const pendingStepsStore = new Map<string, any[]>();
+    const pendingFixResolvers = new Map<string, () => void>();
 
 	const outputChannel = vscode.window.createOutputChannel('Sub Agent Manager');
 	context.subscriptions.push(outputChannel);
@@ -169,52 +168,18 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(applyStepsDisposable);
 
     let fixCommand = vscode.commands.registerCommand('manager-extension.fixDefect', async (stepsId: string) => {
-        const defects = pendingStepsStore.get(stepsId) as Defect[] | undefined;
-        if (!defects || defects.length === 0) {
-            vscode.window.showErrorMessage('No defects received to fix.');
-            return;
-        }
-        pendingStepsStore.delete(stepsId);
-
-        const appliedPatches: Awaited<ReturnType<typeof executeFileEditStep>>[] = [];
-
-        await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: `Preparing fix for ${defects.length} defect(s)...`,
-            cancellable: false
-        }, async (progress) => {
-
-            for (const defect of defects) {
-                progress.report({ message: `Gathering context for ${defect.id}...` });
-
-                const enrichedContext = await getCodeContext(defect, 15);
-
-                if (!enrichedContext) {
-                    vscode.window.showErrorMessage(`Could not read source file context for ${defect?.coordinates?.filepath}`);
-                    continue;
-                }
-
-                defect.context = enrichedContext;
-                const currentPayload: any = {
-                    prompt: "[INPUT_DEFECT: DEFECT]"+JSON.stringify(defect),
-                    conversationId: crypto.randomUUID()
-                };
-                progress.report({ message: `Generating precise patch for ${defect.id}...` });
-
-                const result = await sendChatPayload(currentPayload, undefined, undefined, outputChannel);
-
-                const patch = await executeFileEditStep(result?.dataMessage?.editDefect, originalContentProvider, patchCodeLensProvider);
-                if (patch) {
-                    appliedPatches.push(patch);
-                }
-            }
-        });
-
-        // Confirm/revert each patch outside the progress block so the spinner
-        // stops before the diff view and Keep/Undo notification appear.
-        for (const patch of appliedPatches) {
-            if (patch) {
-                await confirmAppliedPatch(patch);
+        const resolve = pendingFixResolvers.get(stepsId);
+        if (resolve) {
+            // Normal path: a chat turn is waiting for this click — unblock it.
+            pendingFixResolvers.delete(stepsId);
+            resolve();
+        } else {
+            // Fallback: user clicked the button after the chat turn expired.
+            try {
+                await processFixDefectSteps(stepsId, outputChannel, pendingStepsStore, originalContentProvider, patchCodeLensProvider);
+            } catch (err) {
+                outputChannel.appendLine(`❌ Unexpected error: ${err instanceof Error ? err.message : String(err)}`);
+                vscode.window.showErrorMessage(`Sub Agent error: ${err instanceof Error ? err.message : String(err)}`);
             }
         }
     });
@@ -222,7 +187,7 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(fixCommand);
 
 	const agent = vscode.chat.createChatParticipant('my-sub-agent-manager', async (request, context, stream, token) => {
-        await handleChatRequest(request, context, stream, token, outputChannel, pendingStepsStore);
+        await handleChatRequest(request, context, stream, token, outputChannel, pendingStepsStore, pendingFixResolvers, originalContentProvider, patchCodeLensProvider);
     });
 	
 	context.subscriptions.push(agent);
