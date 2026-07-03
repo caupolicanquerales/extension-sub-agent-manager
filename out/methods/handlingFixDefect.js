@@ -38,7 +38,8 @@ const vscode = __importStar(require("vscode"));
 const handlingCodeContext_1 = require("./handlingCodeContext");
 const sendingChatPayload_1 = require("./sendingChatPayload");
 const applyingContentFile_1 = require("./applyingContentFile");
-async function processFixDefectSteps(stepsId, outputChannel, pendingStepsStore, originalContentProvider, patchCodeLensProvider, stream) {
+const handlingRunProjectCommand_1 = require("./handlingRunProjectCommand");
+async function processFixDefectSteps(stepsId, outputChannel, pendingStepsStore, originalContentProvider, patchCodeLensProvider, conversationId, stream) {
     const defects = pendingStepsStore.get(stepsId);
     if (!defects || defects.length === 0) {
         vscode.window.showErrorMessage('No defects received to fix.');
@@ -75,7 +76,7 @@ async function processFixDefectSteps(stepsId, outputChannel, pendingStepsStore, 
             defect.context = enrichedContext;
             const currentPayload = {
                 prompt: "[INPUT_DEFECT: DEFECT]" + JSON.stringify(defect),
-                conversationId: crypto.randomUUID()
+                conversationId: conversationId
             };
             const patchMsg = `${step} Generating patch for \`${defect.id}\`…`;
             stream?.progress(patchMsg);
@@ -121,5 +122,9 @@ async function processFixDefectSteps(stepsId, outputChannel, pendingStepsStore, 
     outputChannel.appendLine(``);
     stream?.markdown(`\n---\n**Done** — ${summary}\n`);
     vscode.window.showInformationMessage(`$(check) Sub Agent finished — ${summary}`);
+    if (appliedPatches.length > 0 && keptCount > 0) {
+        outputChannel.appendLine(`\n▶  Triggering project command verification…`);
+        await (0, handlingRunProjectCommand_1.processRunProjectCommand)(outputChannel, conversationId, stream);
+    }
 }
 //# sourceMappingURL=handlingFixDefect.js.map

@@ -37,6 +37,7 @@ exports.handleChatRequest = handleChatRequest;
 const vscode = __importStar(require("vscode"));
 const sendingChatPayload_1 = require("./methods/sendingChatPayload");
 const handlingFixDefect_1 = require("./methods/handlingFixDefect");
+const boxToDisplayCommand_1 = require("./elements/boxToDisplayCommand");
 function renderLabeledItems(stream, items) {
     for (const item of items) {
         const label = [item.id ? `Step ${item.id}` : '', item.title].filter(Boolean).join(': ');
@@ -46,8 +47,7 @@ function renderLabeledItems(stream, items) {
         }
     }
 }
-async function handleChatRequest(request, context, stream, token, outputChannel, pendingStepsStore, pendingFixResolvers, originalContentProvider, patchCodeLensProvider) {
-    const conversationId = crypto.randomUUID();
+async function handleChatRequest(request, context, stream, token, outputChannel, pendingStepsStore, pendingFixResolvers, originalContentProvider, patchCodeLensProvider, conversationId) {
     stream.progress('Thinking...');
     try {
         let currentPayload = {
@@ -82,12 +82,7 @@ async function handleChatRequest(request, context, stream, token, outputChannel,
                 stream.progress('Processing tool data...');
             }
             else if (result.dataMessage?.type === 'terminal') {
-                const rawCommand = result.dataMessage.message;
-                const encodedArgs = encodeURIComponent(JSON.stringify({ command: rawCommand }));
-                stream.markdown(`\n\`\`\`bash\n${rawCommand}\n\`\`\`\n`);
-                const buttonMd = new vscode.MarkdownString(`[$(terminal) Run Command](command:myCompilerExtension.runTerminalCommand?${encodedArgs})`, true);
-                buttonMd.isTrusted = { enabledCommands: ['myCompilerExtension.runTerminalCommand'] };
-                stream.markdown(buttonMd);
+                (0, boxToDisplayCommand_1.displayBoxCommand)(result.dataMessage, stream);
                 processing = false;
             }
             else if (result.dataMessage?.type === 'step_actions') {
@@ -137,7 +132,7 @@ async function handleChatRequest(request, context, stream, token, outputChannel,
                         }
                         throw e;
                     }
-                    await (0, handlingFixDefect_1.processFixDefectSteps)(stepsId, outputChannel, pendingStepsStore, originalContentProvider, patchCodeLensProvider, stream);
+                    await (0, handlingFixDefect_1.processFixDefectSteps)(stepsId, outputChannel, pendingStepsStore, originalContentProvider, patchCodeLensProvider, conversationId, stream);
                     return;
                 }
                 processing = false;
@@ -180,7 +175,8 @@ async function executeWorkspaceScan(targetProjectName, action, outputChannel) {
             status: 'OK',
             project: targetFolder.name,
             buildTool: 'maven',
-            buildFile: mavenFiles[0].fsPath
+            buildFile: mavenFiles[0].fsPath,
+            action: action
         });
     }
     if (npmFiles.length > 0) {
@@ -188,14 +184,16 @@ async function executeWorkspaceScan(targetProjectName, action, outputChannel) {
             status: 'OK',
             project: targetFolder.name,
             buildTool: 'npm',
-            buildFile: npmFiles[0].fsPath
+            buildFile: npmFiles[0].fsPath,
+            action: action
         });
     }
     return JSON.stringify({
         status: 'OK',
         project: targetFolder.name,
         buildTool: 'unknown',
-        buildFile: null
+        buildFile: null,
+        action: action
     });
 }
 //# sourceMappingURL=chatHandler.js.map

@@ -45,7 +45,9 @@ const handlingTerminalCommands_1 = require("./methods/handlingTerminalCommands")
 const applyingContentFile_1 = require("./methods/applyingContentFile");
 const handlingErrorLogs_1 = require("./methods/handlingErrorLogs");
 const handlingFixDefect_1 = require("./methods/handlingFixDefect");
+const handlingRunProjectCommand_1 = require("./methods/handlingRunProjectCommand");
 function activate(context) {
+    const sessionConversationId = crypto.randomUUID();
     const originalContentProvider = new applyingContentFile_1.OriginalContentProvider();
     context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(applyingContentFile_1.OriginalContentProvider.scheme, originalContentProvider));
     const patchCodeLensProvider = new applyingContentFile_1.PatchCodeLensProvider();
@@ -161,14 +163,12 @@ function activate(context) {
     let fixCommand = vscode.commands.registerCommand('manager-extension.fixDefect', async (stepsId) => {
         const resolve = pendingFixResolvers.get(stepsId);
         if (resolve) {
-            // Normal path: a chat turn is waiting for this click — unblock it.
             pendingFixResolvers.delete(stepsId);
             resolve();
         }
         else {
-            // Fallback: user clicked the button after the chat turn expired.
             try {
-                await (0, handlingFixDefect_1.processFixDefectSteps)(stepsId, outputChannel, pendingStepsStore, originalContentProvider, patchCodeLensProvider);
+                await (0, handlingFixDefect_1.processFixDefectSteps)(stepsId, outputChannel, pendingStepsStore, originalContentProvider, patchCodeLensProvider, sessionConversationId);
             }
             catch (err) {
                 outputChannel.appendLine(`❌ Unexpected error: ${err instanceof Error ? err.message : String(err)}`);
@@ -177,8 +177,18 @@ function activate(context) {
         }
     });
     context.subscriptions.push(fixCommand);
+    let runProjectCommand = vscode.commands.registerCommand('manager-extension.runProjectCommand', async () => {
+        try {
+            await (0, handlingRunProjectCommand_1.processRunProjectCommand)(outputChannel, sessionConversationId);
+        }
+        catch (err) {
+            outputChannel.appendLine(`❌ Unexpected error: ${err instanceof Error ? err.message : String(err)}`);
+            vscode.window.showErrorMessage(`Sub Agent error: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    });
+    context.subscriptions.push(runProjectCommand);
     const agent = vscode.chat.createChatParticipant('my-sub-agent-manager', async (request, context, stream, token) => {
-        await (0, chatHandler_1.handleChatRequest)(request, context, stream, token, outputChannel, pendingStepsStore, pendingFixResolvers, originalContentProvider, patchCodeLensProvider);
+        await (0, chatHandler_1.handleChatRequest)(request, context, stream, token, outputChannel, pendingStepsStore, pendingFixResolvers, originalContentProvider, patchCodeLensProvider, sessionConversationId);
     });
     context.subscriptions.push(agent);
 }

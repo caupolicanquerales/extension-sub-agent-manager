@@ -3,6 +3,7 @@ import { getCodeContext } from './handlingCodeContext';
 import { sendChatPayload } from './sendingChatPayload';
 import { executeFileEditStep, confirmAppliedPatch, OriginalContentProvider, PatchCodeLensProvider } from './applyingContentFile';
 import { Defect } from '../interfaces/interfaces';
+import { processRunProjectCommand } from './handlingRunProjectCommand';
 
 
 export async function processFixDefectSteps(
@@ -11,7 +12,8 @@ export async function processFixDefectSteps(
     pendingStepsStore: Map<string, Defect[]>,
     originalContentProvider: OriginalContentProvider,
     patchCodeLensProvider: PatchCodeLensProvider,
-    stream?: vscode.ChatResponseStream
+    conversationId: string,
+    stream?: vscode.ChatResponseStream,
 ) {
     const defects = pendingStepsStore.get(stepsId) as Defect[] | undefined;
         if (!defects || defects.length === 0) {
@@ -58,7 +60,7 @@ export async function processFixDefectSteps(
                 defect.context = enrichedContext;
                 const currentPayload: any = {
                     prompt: "[INPUT_DEFECT: DEFECT]"+JSON.stringify(defect),
-                    conversationId: crypto.randomUUID()
+                    conversationId: conversationId
                 };
 
                 const patchMsg = `${step} Generating patch for \`${defect.id}\`…`;
@@ -107,5 +109,10 @@ export async function processFixDefectSteps(
 
         stream?.markdown(`\n---\n**Done** — ${summary}\n`);
         vscode.window.showInformationMessage(`$(check) Sub Agent finished — ${summary}`);
+
+        if (appliedPatches.length > 0 && keptCount > 0) {
+            outputChannel.appendLine(`\n▶  Triggering project command verification…`);
+            await processRunProjectCommand(outputChannel, conversationId, stream);
+        }
 }
 

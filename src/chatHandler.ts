@@ -3,6 +3,7 @@ import { ToolArgument } from './interfaces/interfaces';
 import { sendChatPayload } from './methods/sendingChatPayload';
 import { processFixDefectSteps } from './methods/handlingFixDefect';
 import { OriginalContentProvider, PatchCodeLensProvider } from './methods/applyingContentFile';
+import { displayBoxCommand } from './elements/boxToDisplayCommand';
 
 
 function renderLabeledItems(
@@ -27,9 +28,9 @@ export async function handleChatRequest(
     pendingStepsStore: Map<string, any[]>,
     pendingFixResolvers: Map<string, () => void>,
     originalContentProvider: OriginalContentProvider,
-    patchCodeLensProvider: PatchCodeLensProvider
+    patchCodeLensProvider: PatchCodeLensProvider,
+    conversationId: string
 ): Promise<void> {
-    const conversationId = crypto.randomUUID(); 
     stream.progress('Thinking...');
 
     try {
@@ -70,18 +71,9 @@ export async function handleChatRequest(
                 
                 stream.progress('Processing tool data...');
             } else if (result.dataMessage?.type === 'terminal') {
-                const rawCommand = result.dataMessage.message;
-                const encodedArgs = encodeURIComponent(JSON.stringify({ command: rawCommand }));
 
-                stream.markdown(`\n\`\`\`bash\n${rawCommand}\n\`\`\`\n`);
-
-                const buttonMd = new vscode.MarkdownString(
-                    `[$(terminal) Run Command](command:myCompilerExtension.runTerminalCommand?${encodedArgs})`,
-                    true
-                );
-                buttonMd.isTrusted = { enabledCommands: ['myCompilerExtension.runTerminalCommand'] };
-                stream.markdown(buttonMd);
-
+                displayBoxCommand(result.dataMessage, stream);   
+  
                 processing = false;
 
             } else if (result.dataMessage?.type === 'step_actions') {
@@ -140,7 +132,7 @@ export async function handleChatRequest(
                     }
                     await processFixDefectSteps(
                         stepsId, outputChannel, pendingStepsStore,
-                        originalContentProvider, patchCodeLensProvider, stream
+                        originalContentProvider, patchCodeLensProvider, conversationId, stream
                     );
                     return;
                 }
@@ -191,7 +183,8 @@ async function executeWorkspaceScan(targetProjectName: string | undefined, actio
             status: 'OK',
             project: targetFolder.name,
             buildTool: 'maven',
-            buildFile: mavenFiles[0].fsPath
+            buildFile: mavenFiles[0].fsPath,
+            action: action
         });
     }
 
@@ -200,7 +193,8 @@ async function executeWorkspaceScan(targetProjectName: string | undefined, actio
             status: 'OK',
             project: targetFolder.name,
             buildTool: 'npm',
-            buildFile: npmFiles[0].fsPath
+            buildFile: npmFiles[0].fsPath,
+            action: action
         });
     }
 
@@ -208,6 +202,7 @@ async function executeWorkspaceScan(targetProjectName: string | undefined, actio
         status: 'OK',
         project: targetFolder.name,
         buildTool: 'unknown',
-        buildFile: null
+        buildFile: null,
+        action: action
     });
 }
