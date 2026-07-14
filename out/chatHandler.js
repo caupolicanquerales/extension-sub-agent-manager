@@ -38,6 +38,7 @@ const vscode = __importStar(require("vscode"));
 const sendingChatPayload_1 = require("./methods/sendingChatPayload");
 const handlingFixDefect_1 = require("./methods/handlingFixDefect");
 const boxToDisplayCommand_1 = require("./elements/boxToDisplayCommand");
+const extractingMetadata_1 = require("./methods/extractingMetadata");
 function renderLabeledItems(stream, items) {
     for (const item of items) {
         const label = [item.id ? `Step ${item.id}` : '', item.title].filter(Boolean).join(': ');
@@ -110,9 +111,6 @@ async function handleChatRequest(request, context, stream, token, outputChannel,
                     const buttonMd = new vscode.MarkdownString(`[$(wrench) Apply All Steps](command:manager-extension.fixDefect?${encodedArgs})`, true);
                     buttonMd.isTrusted = { enabledCommands: ['manager-extension.fixDefect'] };
                     stream.markdown(buttonMd);
-                    // Keep the chat turn alive (blue spinner) until the user clicks the button.
-                    // The fixDefect command resolves this promise, then we process inline
-                    // with the live stream so every step shows in the chat panel.
                     processing = false;
                     const fixTrigger = new Promise((resolve, reject) => {
                         pendingFixResolvers.set(stepsId, resolve);
@@ -138,7 +136,6 @@ async function handleChatRequest(request, context, stream, token, outputChannel,
                 processing = false;
             }
             else {
-                // No tool call returned. The agent gave its final message, we can stop looping.
                 processing = false;
             }
         }
@@ -171,11 +168,13 @@ async function executeWorkspaceScan(targetProjectName, action, outputChannel) {
     const mavenFiles = await vscode.workspace.findFiles(new vscode.RelativePattern(targetFolder, '**/pom.xml'), '**/target/**', 1);
     const npmFiles = await vscode.workspace.findFiles(new vscode.RelativePattern(targetFolder, '**/package.json'), '**/node_modules/**', 1);
     if (mavenFiles.length > 0) {
+        const metadata = await (0, extractingMetadata_1.extractPomMetadata)(mavenFiles[0]);
         return JSON.stringify({
             status: 'OK',
             project: targetFolder.name,
             buildTool: 'maven',
             buildFile: mavenFiles[0].fsPath,
+            metadata: metadata,
             action: action
         });
     }

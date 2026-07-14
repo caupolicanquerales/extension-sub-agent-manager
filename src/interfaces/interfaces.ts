@@ -90,3 +90,9 @@ export interface DataMessage {
     defects?: DataDefects;
     editDefect?: DataEditDefect;
 }
+
+export interface PomMetadata {
+    javaVersion?: string;
+    springBootVersion?: string;
+    junitVersion?: string;
+}

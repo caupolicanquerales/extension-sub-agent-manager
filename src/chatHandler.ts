@@ -4,6 +4,7 @@ import { sendChatPayload } from './methods/sendingChatPayload';
 import { processFixDefectSteps } from './methods/handlingFixDefect';
 import { OriginalContentProvider, PatchCodeLensProvider } from './methods/applyingContentFile';
 import { displayBoxCommand } from './elements/boxToDisplayCommand';
+import { extractPomMetadata } from './methods/extractingMetadata';
 
 
 function renderLabeledItems(
@@ -111,9 +112,6 @@ export async function handleChatRequest(
                     buttonMd.isTrusted = { enabledCommands: ['manager-extension.fixDefect'] };
                     stream.markdown(buttonMd);
 
-                    // Keep the chat turn alive (blue spinner) until the user clicks the button.
-                    // The fixDefect command resolves this promise, then we process inline
-                    // with the live stream so every step shows in the chat panel.
                     processing = false;
                     const fixTrigger = new Promise<void>((resolve, reject) => {
                         pendingFixResolvers.set(stepsId, resolve);
@@ -140,7 +138,6 @@ export async function handleChatRequest(
                 processing = false;
 
             } else {
-                // No tool call returned. The agent gave its final message, we can stop looping.
                 processing = false;
             }
         }
@@ -179,11 +176,13 @@ async function executeWorkspaceScan(targetProjectName: string | undefined, actio
     const npmFiles   = await vscode.workspace.findFiles(new vscode.RelativePattern(targetFolder, '**/package.json'), '**/node_modules/**', 1);
 
     if (mavenFiles.length > 0) {
+        const metadata = await extractPomMetadata(mavenFiles[0]);
         return JSON.stringify({
             status: 'OK',
             project: targetFolder.name,
             buildTool: 'maven',
             buildFile: mavenFiles[0].fsPath,
+            metadata: metadata,
             action: action
         });
     }
